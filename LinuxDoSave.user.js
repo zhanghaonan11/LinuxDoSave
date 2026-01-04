@@ -1,8 +1,8 @@
 // ==UserScript==
-// @name         LINUXDO 帖子标题及源码一键提取器 (带下载功能)
+// @name         LINUXDO 帖子标题及源码一键提取器 (带下载及URL)
 // @namespace    http://tampermonkey.net/
-// @version      3.3
-// @description  在 linux.do 主贴下方添加复制按钮，支持一键复制“标题 + Markdown 源码”，并支持 Ctrl+S 下载为常用 Markdown 文件
+// @version      3.4
+// @description  在 linux.do 主贴下方添加复制按钮，支持一键复制“标题 + URL + Markdown 源码”，并支持 Ctrl+S 下载
 // @author       Gemini & Mozi
 // @match        https://linux.do/t/*
 // @icon         https://linux.do/uploads/default/original/3X/9/d/9dd49731091ce8656e94433a26a3ef36062b3994.png
@@ -88,7 +88,7 @@
         setTimeout(() => toast.classList.remove('show'), 2000);
     }
 
-    // 清理文件名 (参考 a.js)
+    // 清理文件名
     function sanitizeFilename(filename) {
         return filename.replace(/[<>:"/\\|?*]/g, '_').trim();
     }
@@ -120,6 +120,66 @@
         return "Untitled";
     }
 
+    // 修复图片链接：将 upload://... 替换为绝对路径
+    function resolveImageUrls(markdown) {
+        const postElement = document.querySelector('#post_1 .cooked');
+        if (!postElement) return markdown;
+
+        const images = postElement.querySelectorAll('img');
+        const urlMap = new Map();
+
+        // 构建映射表: sha1 -> url (优先), alt -> url (兜底)
+        images.forEach(img => {
+            const src = img.src;
+            // 跳过非 http 开头的链接 (如 base64 或 相对路径异常)
+            if (!src || !src.startsWith('http')) return;
+
+            // 1. 尝试通过 data-base62-sha1 匹配
+            const sha1 = img.getAttribute('data-base62-sha1');
+            if (sha1) {
+                // Discourse upload:// 链接通常是 upload://{sha1}.{ext}
+                // 我们只需要匹配 sha1 即可
+                urlMap.set(sha1, src);
+            }
+
+            // 2. 尝试通过 alt 匹配 (兜底方案，Discourse markdown 是 ![alt](url))
+            const alt = img.getAttribute('alt');
+            if (alt) {
+                urlMap.set(alt, src);
+            }
+
+            // 3. 尝试直接从 src 提取文件名匹配
+            // 有些情况 upload:// 后面跟的是文件名
+            const filename = src.split('/').pop();
+            if (filename) {
+                urlMap.set(filename, src);
+            }
+        });
+
+        // 替换 markdown 中的 upload:// 链接
+        // 匹配格式: ![alt](upload://hash.ext) 或 [alt](upload://hash.ext)
+        // 正则捕获: 1=alt, 2=upload部分, 3=hash(非贪婪), 4=ext(可选)
+        return markdown.replace(/!\[(.*?)\]\((upload:\/\/([a-zA-Z0-9]+)(\.[a-zA-Z0-9]+)?)\)/g, (match, alt, fullUploadUrl, hash, ext) => {
+            // 尝试通过 hash 查找
+            if (urlMap.has(hash)) {
+                return `![${alt}](${urlMap.get(hash)})`;
+            }
+            // 尝试通过 alt 查找
+            if (urlMap.has(alt)) {
+                return `![${alt}](${urlMap.get(alt)})`;
+            }
+
+            // 尝试通过文件名查找 (Discourse 有时 upload:// 后面不一定是 sha1，可能是短文件名)
+            // 这里的 hash + ext 大概就是文件名
+            if (hash && ext && urlMap.has(hash + ext)) {
+                return `![${alt}](${urlMap.get(hash + ext)})`;
+            }
+
+            // 如果都没找到，保留原样 (或者可以替换为一个占位图)
+            return match;
+        });
+    }
+
     // 核心工具：获取数据 (返回 Promise)
     function fetchTopicData() {
         return new Promise((resolve, reject) => {
@@ -137,11 +197,21 @@
                 })
                 .then(text => {
                     if (!text) throw new Error("Empty content");
+
                     const title = getTitle();
-                    let finalContent = text;
+                    const url = window.location.href; // 获取当前URL
+                    let finalContent = "";
+
+                    // 修复图片链接: 将 upload:// 替换为实际链接
+                    text = resolveImageUrls(text);
+
+                    // 拼接: 标题 + URL + 源码
                     if (title && title !== "Untitled") {
-                        finalContent = `# ${title}\n\n${text}`;
+                        finalContent = `# ${title}\n\n${url}\n\n${text}`;
+                    } else {
+                        finalContent = `${url}\n\n${text}`;
                     }
+
                     resolve({ title, content: finalContent });
                 })
                 .catch(err => {
@@ -150,7 +220,7 @@
         });
     }
 
-    // 动作：下载文件 (参考 a.js)
+    // 动作：下载文件
     function downloadFile(content, filename) {
         try {
             const blob = new Blob([content], { type: 'text/markdown;charset=utf-8' });
@@ -182,7 +252,7 @@
         fetchTopicData()
             .then(({ title, content }) => {
                 GM_setClipboard(content);
-                showToast("✅ 标题与源码已复制");
+                showToast("✅ 标题/URL/源码已复制");
             })
             .catch(err => {
                 showToast(`❌ ${err}`, true);
@@ -236,7 +306,7 @@
         const copyBtn = document.createElement('button');
         copyBtn.className = 'btn btn-default linuxdo-raw-btn';
         copyBtn.innerHTML = COPY_ALL_ICON;
-        copyBtn.title = "一键复制标题和 Markdown 源码";
+        copyBtn.title = "复制 (标题 + URL + 源码)";
         copyBtn.addEventListener('click', (e) => {
             e.preventDefault();
             if (copyBtn.classList.contains('loading')) return;
@@ -247,7 +317,7 @@
         const downloadBtn = document.createElement('button');
         downloadBtn.className = 'btn btn-default linuxdo-raw-btn';
         downloadBtn.innerHTML = DOWNLOAD_ICON;
-        downloadBtn.title = "下载为 Markdown (Ctrl+S)";
+        downloadBtn.title = "下载 .md (Ctrl+S)";
         downloadBtn.addEventListener('click', (e) => {
             e.preventDefault();
             if (downloadBtn.classList.contains('loading')) return;
@@ -265,14 +335,8 @@
             // 检查 Ctrl+S (Windows/Linux) 或 Command+S (Mac)
             if ((event.ctrlKey || event.metaKey) && event.key === 's') {
                 event.preventDefault(); // 阻止浏览器保存网页
-                console.log("Triggering Ctrl+S download...");
 
-                // 找到下载按钮以显示加载状态，如果找不到也不影响功能
-                const downloadBtn = document.querySelector('#post_1 .linuxdo-raw-btn:nth-child(2)'); // 假设第二个是下载
-                // 或者更稳健地查找:
-                // const btns = document.querySelectorAll('.linuxdo-raw-btn');
-                // const downloadBtn = Array.from(btns).find(b => b.title.includes('Download'));
-
+                const downloadBtn = document.querySelector('#post_1 .linuxdo-raw-btn:nth-child(2)');
                 handleDownload(downloadBtn);
             }
         });
@@ -294,7 +358,6 @@
 
     observer.observe(document.body, { childList: true, subtree: true });
 
-    // 初始化键盘监听
     bindKeyboardEvents();
 
 })();
