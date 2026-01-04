@@ -1,340 +1,179 @@
 // ==UserScript==
-// @name         Linux.do 下崽器 (新版-修改版-带快捷键)
-// @namespace    http://linux.do/
-// @version      1.2.1
-// @description  备份你珍贵的水贴为Markdown。优化版：性能提升，架构重构，更好的错误处理。
-// @author       PastKing (修改：Anonymous)
-// @match        https://www.linux.do/t/topic/*
-// @match        https://linux.do/t/topic/*
-// @license      MIT
-// @icon         https://cdn.linux.do/uploads/default/optimized/1X/3a18b4b0da3e8cf96f7eea15241c3d251f28a39b_2_32x32.png
-// @grant        none
-// @require      https://unpkg.com/turndown@7.1.3/dist/turndown.js
+// @name         LINUXDO主贴内容提取器
+// @namespace    http://tampermonkey.net/
+// @version      3.0
+// @description  在 linux.do 主贴下方添加复制按钮，点击一键获取并复制 Markdown 原始源码
+// @author       Gemini & Mozi
+// @match        https://linux.do/t/*
+// @icon         https://linux.do/uploads/default/original/3X/9/d/9dd49731091ce8656e94433a26a3ef36062b3994.png
+// @grant        GM_setClipboard
+// @grant        GM_addStyle
 // ==/UserScript==
 
 (function () {
     'use strict';
 
-    // 常量配置
-    const CONFIG = {
-        BUTTON_ID: 'markdown-download-btn',
-        BUTTON_TEXT: 'MD',
-        DEBOUNCE_DELAY: 300,
-        OBSERVER_TIMEOUT: 5000
-    };
-
-    const SELECTORS = {
-        SITE_LOGO: '#site-logo',
-        TITLE: '#topic-title > div > h1 > a.fancy-title > span',
-        CONTENT: '#post_1 > div.row > div.topic-body.clearfix > div.regular.contents > div.cooked'
-    };
-
-    const STYLES = {
-        BUTTON: `
-            padding: 6px 12px;
-            font-size: 14px;
-            font-weight: bold;
-            color: #ffffff;
-            background-color: #0f9d58;
+    // 样式调整：针对纯图标按钮进行优化
+    GM_addStyle(`
+        .linuxdo-raw-btn {
+            background: transparent;
             border: none;
-            border-radius: 4px;
             cursor: pointer;
-            transition: background-color 0.3s ease;
-            box-shadow: 0 2px 4px rgba(0,0,0,0.2);
-            margin-left: 10px;
-            vertical-align: middle;
-        `,
-        BUTTON_HOVER: '#0b8043'
-    };
-
-    // 工具函数
-    const utils = {
-        // 防抖函数
-        debounce(func, delay) {
-            let timeoutId;
-            return function (...args) {
-                clearTimeout(timeoutId);
-                timeoutId = setTimeout(() => func.apply(this, args), delay);
-            };
-        },
-
-        // 安全的DOM查询
-        safeQuerySelector(selector, context = document) {
-            try {
-                return context.querySelector(selector);
-            } catch (error) {
-                console.error(`查询选择器失败: ${selector}`, error);
-                return null;
-            }
-        },
-
-        // 清理文件名
-        sanitizeFilename(filename) {
-            return filename.replace(/[<>:"/\\|?*]/g, '_').trim();
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            padding: 8px; /* 调整内边距，使其接近正方形 */
+            color: #646464;
+            transition: all 0.2s;
+            border-radius: 4px;
         }
-    };
-
-    // 主类：Linux.do下载器
-    class LinuxDoDownloader {
-        constructor() {
-            this.button = null;
-            this.observer = null;
-            this.isInitialized = false;
-            this.debouncedInsertButton = utils.debounce(this.insertButton.bind(this), CONFIG.DEBOUNCE_DELAY);
-
-            this.init();
+        .linuxdo-raw-btn:hover {
+            background-color: var(--d-button-hover-background, #e9e9e9);
+            color: var(--primary, #222);
         }
-
-        init() {
-            try {
-                this.setupButton();
-                this.setupObserver();
-                this.bindKeyboardEvents();
-                this.isInitialized = true;
-                console.log('Linux.do下载器初始化成功');
-            } catch (error) {
-                console.error('Linux.do下载器初始化失败:', error);
-            }
+        .linuxdo-raw-btn svg {
+            width: 18px; /* 稍微调大一点图标 */
+            height: 18px;
+            fill: currentColor;
+            pointer-events: none;
         }
-
-        // 创建下载按钮
-        createButton() {
-            const button = document.createElement('button');
-            button.id = CONFIG.BUTTON_ID;
-            button.textContent = CONFIG.BUTTON_TEXT;
-            button.style.cssText = STYLES.BUTTON;
-            button.title = '下载为Markdown (Ctrl+S)';
-
-            // 悬停效果
-            button.addEventListener('mouseenter', () => {
-                button.style.backgroundColor = STYLES.BUTTON_HOVER;
-            });
-
-            button.addEventListener('mouseleave', () => {
-                button.style.backgroundColor = '#0f9d58';
-            });
-
-            button.addEventListener('click', this.handleDownload.bind(this));
-
-            return button;
+        .linuxdo-raw-btn.loading {
+            cursor: wait;
+            opacity: 0.6;
         }
-
-        // 插入按钮
-        insertButton() {
-            if (document.getElementById(CONFIG.BUTTON_ID)) {
-                return; // 按钮已存在
-            }
-
-            const siteLogo = utils.safeQuerySelector(SELECTORS.SITE_LOGO);
-            if (!siteLogo?.parentNode) {
-                return;
-            }
-
-            try {
-                this.button = this.createButton();
-                siteLogo.parentNode.insertBefore(this.button, siteLogo.nextSibling);
-            } catch (error) {
-                console.error('插入按钮失败:', error);
-            }
+        /* 提示框样式 */
+        #extract-toast {
+            position: fixed;
+            top: 60px; /* 稍微往下一点，避免遮挡顶部导航 */
+            right: 20px;
+            background: #28a745;
+            color: white;
+            padding: 10px 20px;
+            border-radius: 4px;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+            z-index: 9999;
+            opacity: 0;
+            transform: translateY(-10px);
+            transition: opacity 0.3s, transform 0.3s;
+            pointer-events: none;
+            font-size: 14px;
+            font-weight: 500;
         }
-
-        // 设置按钮
-        setupButton() {
-            this.insertButton();
+        #extract-toast.show {
+            opacity: 1;
+            transform: translateY(0);
         }
-
-        // 设置DOM观察器
-        setupObserver() {
-            const siteLogo = utils.safeQuerySelector(SELECTORS.SITE_LOGO);
-            if (!siteLogo?.parentNode) {
-                // 延迟重试
-                setTimeout(() => this.setupObserver(), 1000);
-                return;
-            }
-
-            const config = {
-                childList: true,
-                subtree: false // 只监听直接子元素
-            };
-
-            this.observer = new MutationObserver((mutations) => {
-                for (const mutation of mutations) {
-                    if (mutation.type === 'childList') {
-                        this.debouncedInsertButton();
-                        break;
-                    }
-                }
-            });
-
-            this.observer.observe(siteLogo.parentNode, config);
-
-            // 设置观察器超时
-            setTimeout(() => {
-                if (this.observer) {
-                    this.observer.disconnect();
-                    this.observer = null;
-                }
-            }, CONFIG.OBSERVER_TIMEOUT);
+        #extract-toast.error {
+            background: #d73a49;
         }
+    `);
 
-        // 获取文章内容
-        getArticleContent() {
-            try {
-                const titleElement = utils.safeQuerySelector(SELECTORS.TITLE);
-                const contentElement = utils.safeQuerySelector(SELECTORS.CONTENT);
+    // 图标定义 (Material Design Copy Icon)
+    const COPY_ICON = `<svg viewBox="0 0 24 24"><path d="M16 1H4c-1.1 0-2 .9-2 2v14h2V3h12V1zm3 4H8c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h11c1.1 0 2-.9 2-2V7c0-1.1-.9-2-2-2zm0 16H8V7h11v14z"/></svg>`;
+    const LOADING_ICON = `<svg viewBox="0 0 24 24" style="animation:spin 1s linear infinite"><style>@keyframes spin{100%{transform:rotate(360deg)}}</style><path d="M12 4V2A10 10 0 0 0 2 12h2a8 8 0 0 1 8-8z"/></svg>`;
 
-                if (!titleElement || !contentElement) {
-                    throw new Error('无法找到文章标题或内容元素，页面结构可能已变更');
-                }
-
-                const title = titleElement.textContent?.trim();
-                const content = contentElement.innerHTML;
-
-                if (!title || !content) {
-                    throw new Error('文章标题或内容为空');
-                }
-
-                return { title, content };
-            } catch (error) {
-                console.error('获取文章内容失败:', error);
-                throw error;
-            }
+    // 显示提示
+    function showToast(message, isError = false) {
+        let toast = document.getElementById('extract-toast');
+        if (!toast) {
+            toast = document.createElement('div');
+            toast.id = 'extract-toast';
+            document.body.appendChild(toast);
         }
-
-        // 转换为Markdown
-        convertToMarkdown(article) {
-            try {
-                const turndownService = new TurndownService({
-                    headingStyle: 'atx',
-                    codeBlockStyle: 'fenced'
-                });
-
-                // 自定义规则处理图片和链接
-                turndownService.addRule('images_and_links', {
-                    filter: ['a', 'img'],
-                    replacement: (content, node) => {
-                        if (node.nodeName === 'IMG') {
-                            const alt = node.alt || '';
-                            const src = node.getAttribute('src') || '';
-                            const title = node.title ? ` "${node.title}"` : '';
-                            return `![${alt}](${src}${title})`;
-                        }
-
-                        if (node.nodeName === 'A') {
-                            const href = node.getAttribute('href') || '';
-                            const title = node.title ? ` "${node.title}"` : '';
-                            const img = node.querySelector('img');
-
-                            if (img) {
-                                const alt = img.alt || '';
-                                const src = img.getAttribute('src') || '';
-                                const imgTitle = img.title ? ` "${img.title}"` : '';
-                                return `[![${alt}](${src}${imgTitle})](${href}${title})`;
-                            }
-
-                            return `[${node.textContent || ''}](${href}${title})`;
-                        }
-                    }
-                });
-
-                return `# ${article.title}\n\n${turndownService.turndown(article.content)}`;
-            } catch (error) {
-                console.error('Markdown转换失败:', error);
-                throw new Error('Markdown转换失败，请检查内容格式');
-            }
-        }
-
-        // 下载文件
-        downloadFile(content, filename) {
-            try {
-                const blob = new Blob([content], { type: 'text/markdown;charset=utf-8' });
-                const url = URL.createObjectURL(blob);
-                const a = document.createElement('a');
-
-                a.href = url;
-                a.download = utils.sanitizeFilename(filename);
-                a.style.display = 'none';
-
-                document.body.appendChild(a);
-                a.click();
-                document.body.removeChild(a);
-
-                // 清理URL对象
-                setTimeout(() => URL.revokeObjectURL(url), 1000);
-            } catch (error) {
-                console.error('文件下载失败:', error);
-                throw new Error('文件下载失败');
-            }
-        }
-
-        // 处理下载
-        handleDownload() {
-            try {
-                const article = this.getArticleContent();
-                const markdown = this.convertToMarkdown(article);
-                const filename = `${article.title}.md`;
-
-                this.downloadFile(markdown, filename);
-                console.log(`成功下载: ${filename}`);
-            } catch (error) {
-                const message = `下载失败: ${error.message}`;
-                console.error(message);
-                alert(message);
-            }
-        }
-
-        // 绑定键盘事件
-        bindKeyboardEvents() {
-            document.addEventListener('keydown', (event) => {
-                if (event.ctrlKey && event.key === 's') {
-                    event.preventDefault();
-                    this.handleDownload();
-                }
-            });
-        }
-
-        // 清理资源
-        destroy() {
-            if (this.observer) {
-                this.observer.disconnect();
-                this.observer = null;
-            }
-
-            if (this.button) {
-                this.button.remove();
-                this.button = null;
-            }
-
-            this.isInitialized = false;
-        }
+        toast.textContent = message;
+        toast.className = isError ? 'error' : '';
+        toast.classList.add('show');
+        setTimeout(() => toast.classList.remove('show'), 2000);
     }
 
-    // 初始化应用
-    let downloader = null;
-
-    function initApp() {
-        try {
-            if (downloader) {
-                downloader.destroy();
-            }
-            downloader = new LinuxDoDownloader();
-        } catch (error) {
-            console.error('应用初始化失败:', error);
+    // 获取 Topic ID
+    function getTopicId() {
+        const match = window.location.pathname.match(/\/t\/[^\/]+\/(\d+)/);
+        if (match && match[1]) {
+            return match[1];
         }
+        return null;
     }
 
-    // 页面加载完成后初始化
-    if (document.readyState === 'loading') {
-        document.addEventListener('DOMContentLoaded', initApp);
-    } else {
-        initApp();
+    // 核心逻辑：获取源码并复制
+    function fetchAndCopyRaw(btnElement) {
+        const topicId = getTopicId();
+
+        if (!topicId) {
+            showToast("❌ 无法定位帖子ID", true);
+            return;
+        }
+
+        // 切换加载状态
+        btnElement.innerHTML = LOADING_ICON;
+        btnElement.classList.add('loading');
+
+        // 请求 Discourse 原始数据接口
+        const apiUrl = `/raw/${topicId}/1`;
+
+        fetch(apiUrl)
+            .then(response => {
+                if (!response.ok) throw new Error("Request failed");
+                return response.text();
+            })
+            .then(text => {
+                if (!text) throw new Error("Empty content");
+                GM_setClipboard(text);
+                showToast("✅ 源码已复制");
+            })
+            .catch(err => {
+                console.error(err);
+                showToast("❌ 获取失败", true);
+            })
+            .finally(() => {
+                // 恢复图标
+                btnElement.innerHTML = COPY_ICON;
+                btnElement.classList.remove('loading');
+            });
     }
 
-    // 页面卸载时清理资源
-    window.addEventListener('beforeunload', () => {
-        if (downloader) {
-            downloader.destroy();
+    // 添加按钮
+    function addExtractButton() {
+        if (!location.href.includes('/t/')) return;
+
+        const postElement = document.querySelector('#post_1');
+        if (!postElement) return;
+
+        // 查找操作栏 (Discourse 结构)
+        const actionsContainer = postElement.querySelector('nav.post-controls .actions, .topic-body .reply-details');
+
+        if (!actionsContainer || postElement.querySelector('.linuxdo-raw-btn')) return;
+
+        const btn = document.createElement('button');
+        btn.className = 'btn btn-default linuxdo-raw-btn';
+        // 仅插入图标，没有 span 文字
+        btn.innerHTML = COPY_ICON;
+        btn.title = "复制主贴源码 (Markdown)"; // 鼠标悬停显示提示
+
+        btn.addEventListener('click', (e) => {
+            e.preventDefault();
+            if (btn.classList.contains('loading')) return;
+            fetchAndCopyRaw(btn);
+        });
+
+        // 插入到操作栏末尾
+        actionsContainer.appendChild(btn);
+    }
+
+    // --- 监听器 ---
+    setTimeout(addExtractButton, 800);
+
+    const observer = new MutationObserver((mutations) => {
+        for (const mutation of mutations) {
+            if (mutation.addedNodes.length) {
+                if (document.querySelector('#post_1') && !document.querySelector('#post_1 .linuxdo-raw-btn')) {
+                    addExtractButton();
+                    break;
+                }
+            }
         }
     });
+
+    observer.observe(document.body, { childList: true, subtree: true });
 
 })();
