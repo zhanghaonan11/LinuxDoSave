@@ -1,8 +1,8 @@
 // ==UserScript==
-// @name         LINUXDO主贴内容提取器
+// @name         LINUXDO 帖子标题及源码一键提取器
 // @namespace    http://tampermonkey.net/
-// @version      3.0
-// @description  在 linux.do 主贴下方添加复制按钮，点击一键获取并复制 Markdown 原始源码
+// @version      3.2
+// @description  在 linux.do 主贴下方添加复制按钮，点击即同时复制“标题 + Markdown 源码”
 // @author       Gemini & Mozi
 // @match        https://linux.do/t/*
 // @icon         https://linux.do/uploads/default/original/3X/9/d/9dd49731091ce8656e94433a26a3ef36062b3994.png
@@ -13,7 +13,7 @@
 (function () {
     'use strict';
 
-    // 样式调整：针对纯图标按钮进行优化
+    // 样式调整
     GM_addStyle(`
         .linuxdo-raw-btn {
             background: transparent;
@@ -22,7 +22,7 @@
             display: inline-flex;
             align-items: center;
             justify-content: center;
-            padding: 8px; /* 调整内边距，使其接近正方形 */
+            padding: 8px;
             color: #646464;
             transition: all 0.2s;
             border-radius: 4px;
@@ -32,7 +32,7 @@
             color: var(--primary, #222);
         }
         .linuxdo-raw-btn svg {
-            width: 18px; /* 稍微调大一点图标 */
+            width: 18px;
             height: 18px;
             fill: currentColor;
             pointer-events: none;
@@ -44,7 +44,7 @@
         /* 提示框样式 */
         #extract-toast {
             position: fixed;
-            top: 60px; /* 稍微往下一点，避免遮挡顶部导航 */
+            top: 60px;
             right: 20px;
             background: #28a745;
             color: white;
@@ -68,8 +68,9 @@
         }
     `);
 
-    // 图标定义 (Material Design Copy Icon)
-    const COPY_ICON = `<svg viewBox="0 0 24 24"><path d="M16 1H4c-1.1 0-2 .9-2 2v14h2V3h12V1zm3 4H8c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h11c1.1 0 2-.9 2-2V7c0-1.1-.9-2-2-2zm0 16H8V7h11v14z"/></svg>`;
+    // 图标定义 (Material Design Icons)
+    // 使用“复制”图标，因为现在是复制所有
+    const COPY_ALL_ICON = `<svg viewBox="0 0 24 24"><path d="M16 1H4c-1.1 0-2 .9-2 2v14h2V3h12V1zm3 4H8c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h11c1.1 0 2-.9 2-2V7c0-1.1-.9-2-2-2zm0 16H8V7h11v14z"/></svg>`;
     const LOADING_ICON = `<svg viewBox="0 0 24 24" style="animation:spin 1s linear infinite"><style>@keyframes spin{100%{transform:rotate(360deg)}}</style><path d="M12 4V2A10 10 0 0 0 2 12h2a8 8 0 0 1 8-8z"/></svg>`;
 
     // 显示提示
@@ -95,8 +96,29 @@
         return null;
     }
 
-    // 核心逻辑：获取源码并复制
-    function fetchAndCopyRaw(btnElement) {
+    // 获取帖子标题
+    function getTitle() {
+        // 参考 a.js 的选择器: #topic-title > div > h1 > a.fancy-title > span
+        // 为了稳健性，尝试多个选择器
+        const selectors = [
+            '#topic-title h1 a.fancy-title',
+            '.fancy-title',
+            'title'
+        ];
+
+        for (let s of selectors) {
+            const el = document.querySelector(s);
+            if (el) {
+                // 如果是 title 标签，直接取 text
+                if (s === 'title') return el.innerText.replace(' - LINUX DO', '').trim();
+                return el.innerText.trim();
+            }
+        }
+        return "";
+    }
+
+    // 核心逻辑：获取源码并与标题组合
+    function fetchAndCopyAll(btnElement) {
         const topicId = getTopicId();
 
         if (!topicId) {
@@ -118,8 +140,18 @@
             })
             .then(text => {
                 if (!text) throw new Error("Empty content");
-                GM_setClipboard(text);
-                showToast("✅ 源码已复制");
+
+                // 获取标题
+                const title = getTitle();
+                let finalContent = text;
+
+                // 如果能获取到标题，则拼接: # Title\n\nContent
+                if (title) {
+                    finalContent = `# ${title}\n\n${text}`;
+                }
+
+                GM_setClipboard(finalContent);
+                showToast("✅ 标题与源码已复制");
             })
             .catch(err => {
                 console.error(err);
@@ -127,7 +159,7 @@
             })
             .finally(() => {
                 // 恢复图标
-                btnElement.innerHTML = COPY_ICON;
+                btnElement.innerHTML = COPY_ALL_ICON;
                 btnElement.classList.remove('loading');
             });
     }
@@ -142,18 +174,18 @@
         // 查找操作栏 (Discourse 结构)
         const actionsContainer = postElement.querySelector('nav.post-controls .actions, .topic-body .reply-details');
 
+        // 如果找不到容器或者已经添加过按钮，则跳过
         if (!actionsContainer || postElement.querySelector('.linuxdo-raw-btn')) return;
 
         const btn = document.createElement('button');
         btn.className = 'btn btn-default linuxdo-raw-btn';
-        // 仅插入图标，没有 span 文字
-        btn.innerHTML = COPY_ICON;
-        btn.title = "复制主贴源码 (Markdown)"; // 鼠标悬停显示提示
+        btn.innerHTML = COPY_ALL_ICON;
+        btn.title = "一键复制标题和 Markdown 源码";
 
         btn.addEventListener('click', (e) => {
             e.preventDefault();
             if (btn.classList.contains('loading')) return;
-            fetchAndCopyRaw(btn);
+            fetchAndCopyAll(btn);
         });
 
         // 插入到操作栏末尾
