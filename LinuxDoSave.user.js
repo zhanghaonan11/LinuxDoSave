@@ -1,10 +1,10 @@
 // ==UserScript==
 // @name         LINUXDO 帖子标题及源码一键提取器 (带下载及URL)
 // @namespace    http://tampermonkey.net/
-// @version      3.4
-// @description  在 linux.do 主贴下方添加复制按钮，支持一键复制“标题 + URL + Markdown 源码”，并支持 Ctrl+S 下载
+// @version      3.5
+// @description  在 linux.do 主贴下方添加复制按钮，支持一键复制"标题 + URL + Markdown 源码"，并支持 Ctrl+S 下载
 // @author       Gemini & Mozi
-// @match        https://linux.do/t/*
+// @match        https://linux.do/*
 // @icon         https://linux.do/uploads/default/original/3X/9/d/9dd49731091ce8656e94433a26a3ef36062b3994.png
 // @grant        GM_setClipboard
 // @grant        GM_addStyle
@@ -334,6 +334,9 @@
         document.addEventListener('keydown', (event) => {
             // 检查 Ctrl+S (Windows/Linux) 或 Command+S (Mac)
             if ((event.ctrlKey || event.metaKey) && event.key === 's') {
+                // 只在帖子页面生效
+                if (!location.href.includes('/t/')) return;
+
                 event.preventDefault(); // 阻止浏览器保存网页
 
                 const downloadBtn = document.querySelector('#post_1 .linuxdo-raw-btn:nth-child(2)');
@@ -345,6 +348,7 @@
     // --- 监听器 ---
     setTimeout(addExtractButtons, 800);
 
+    // DOM 变化监听
     const observer = new MutationObserver((mutations) => {
         for (const mutation of mutations) {
             if (mutation.addedNodes.length) {
@@ -357,6 +361,17 @@
     });
 
     observer.observe(document.body, { childList: true, subtree: true });
+
+    // URL 变化监听 (处理 SPA 路由导航)
+    let lastUrl = location.href;
+    new MutationObserver(() => {
+        if (location.href !== lastUrl) {
+            lastUrl = location.href;
+            if (location.href.includes('/t/')) {
+                setTimeout(addExtractButtons, 500);
+            }
+        }
+    }).observe(document.body, { subtree: true, childList: true });
 
     bindKeyboardEvents();
 
