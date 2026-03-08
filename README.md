@@ -33,6 +33,7 @@
 - `LinuxDoSave.user.js`：当前最新版脚本
 - `a.js` ~ `f.js`：各阶段原始版本快照，便于人工对照
 - `README.md`：仓库说明
+- `CHANGELOG.md`：按 GitHub Releases 风格整理的版本变更记录
 
 ## 版本演进
 
@@ -101,6 +102,12 @@ git checkout f
 
 ```bash
 git checkout main
+```
+
+查看变更日志：
+
+```bash
+cat CHANGELOG.md
 ```
 
 ## 说明
